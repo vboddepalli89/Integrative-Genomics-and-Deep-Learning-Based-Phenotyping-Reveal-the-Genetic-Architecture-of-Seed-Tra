@@ -1,0 +1,473 @@
+---
+title: "GWAS2023analysis"
+author: "Venkata Naresh Boddepalli"
+date: "2023-12-24"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+#install.packages("mvtnorm")
+
+library(inti)
+library(lme4)
+library(GAPIT)
+
+```
+
+
+
+```{r}
+getwd()
+#list.dirs(".")
+```
+
+```{r}
+#read data
+pheno <- seedsize2224
+
+#head(leaf_df)
+#length(unique(pheno$geno))
+
+##set as factors
+cols <- c("block", "line", "env")
+
+pheno[cols] <- lapply(pheno[cols], as.factor)
+# After setting factors
+pheno[cols] <- lapply(pheno[cols], as.factor)
+
+# Convert all trait columns to numeric
+pheno[4:ncol(pheno)] <- lapply(pheno[4:ncol(pheno)], function(x) as.numeric(as.character(x)))
+
+
+###add total leaflet area
+str(pheno)
+```
+##Model selection
+```{r}
+library(readxl)
+library(MuMIn)
+library(emmeans)
+
+seed_A <- lmer(seed_area ~ env + (1|env:block) + line + (1|env:line), data = pheno)
+seed_L <- lmer(seed_length ~ env + (1|env:block) + line + (1|env:line), data = pheno)
+seed_W <- lmer(seed_width ~ env + (1|env:block) + line + (1|env:line), data = pheno)
+seed_A.emm <- emmeans(seed_A, "line")
+seed_L.emm <- emmeans(seed_L, "line")
+seed_W.emm <- emmeans(seed_W, "line")
+seed_A_blue <- as.data.frame(seed_A.emm)
+seed_L_blue <- as.data.frame(seed_L.emm)
+seed_W_blue <- as.data.frame(seed_W.emm)
+write_xlsx(seed_A_blue, "seed_A.blue.xlsx")
+write_xlsx(seed_L_blue, "seed_L.blue.xlsx")
+write_xlsx(seed_W_blue, "seed_W.blue.xlsx")
+
+
+```
+
+
+```{r}
+library(emmeans)
+seed.emm <- emmeans(seed, "line")
+
+seed_blue<- as.data.frame(seed.emm)
+
+```
+
+```{r}
+#install.packages("writexl")
+write_xlsx(seed_blue, "seed_blue.xlsx")
+```
+
+
+```{r}
+start_time <- Sys.time()
+#create final blups dataframe
+line <- unique(pheno$line)
+final_data <- data.frame(line)
+
+##Final descriptive table
+descriptive_stats <- data.frame(character(0), 
+                                numeric(0), 
+                                numeric(0),
+                                numeric(0),
+                                numeric(0),
+                                numeric(0),
+                                numeric(0),
+                                numeric(0),stringsAsFactors=FALSE)
+  #assign column names
+colnames(descriptive_stats) <- c("Trait","Mean","Median","Min","Max","SD","CV","H2.cullis")
+
+#create the anova sort of table
+grp <- c("line", "env", "block", "Residual" )
+variance_table <- data.frame(grp)
+
+
+
+##list of traits
+traits <- colnames(pheno)[4:ncol(pheno)]
+
+##loop through the traits
+
+t =1 
+for(t in 1:length(traits)){
+ 
+    trait = traits[t]
+  
+    hr <- H2cal(data = pheno,
+            trait = trait,
+            gen.name = "line",
+            rep.n = 6,
+            env.n = 3,
+            env.name = unique(pheno$env),
+            random.model = "1 + (1|env)+ (1|env:block)+ (1|line) + (1|env:line) ",
+            fixed.model = "0 + (1|env) + (1|env:block)+ line + (1|env:line)",
+            emmeans = FALSE,
+            plot_diag = FALSE,
+            outliers.rm = TRUE)
+    
+    ####### blups
+    blup <- hr$blups
+   
+    
+    #add blups to table
+    final_data <- merge(final_data, blup, by = "line")
+    
+
+     ###########descriptive
+     Mn <- mean(as.numeric(unlist(blup[,2])))#mean
+     Md <- median(as.numeric(unlist(blup[,2])))
+     Min <- min(as.numeric(unlist(blup[,2])))
+     Max <- max(as.numeric(unlist(blup[,2])))
+     Sd <- sd(as.numeric(unlist(blup[,2])))
+     CV <- Sd/Mn
+     H2.cullis <- hr$tabsmr$H2.c
+     
+     #create a vector with variables
+     to_add <- c(trait,Mn,Md,Min,Max, Sd, CV, H2.cullis)
+     #add to the df
+     descriptive_stats <- descriptive_stats %>% add_row(Trait = trait,
+                                                   Mean = Mn,
+                                                   Median = Md,
+                                                   Min = Min,
+                                                   Max = Max,
+                                                   SD = Sd,
+                                                   CV = CV,
+                                                   H2.cullis = H2.cullis)
+
+     
+       #descriptive
+    descriptive_stats[, -1] <- round(descriptive_stats[, -1], 2)#apply to whole table
+    
+    ############## variance components
+    y <- as.data.frame(VarCorr(hr$model)) #extract variance components as a table
+
+    #extract variance components (column 1, 4 and round to 2 d.p)
+    y1 <- y[, c(1,4)] %>% mutate_if(is.numeric, ~round(., 2))
+    y1$percent <- (y1[,2]/ sum(y1$vcov)*100)  #new column with %
+
+    y1$percent <- round(y1$percent, 1) #round off to o d.p.
+
+    names(y1)[2]<-paste0(trait,"_var")
+    
+    
+    variance_table <- merge(variance_table, y1, by='grp')
+    
+    print(paste0("Done with: ", trait))
+}
+
+#get sum of variance table components
+###add totals row
+row_totals <- colSums(variance_table[,2:ncol(variance_table)])
+variance_table[nrow(variance_table) + 1, ] <- c(a = "Totals", as.list(row_totals))
+
+#save
+write.csv(final_data,"C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\descriptive stats\\blups.random.csv", row.names = F)
+
+write.csv( descriptive_stats, "C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\descriptive stats\\summary.random.csv", row.names = F)
+write.csv(variance_table, "C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\descriptive stats\\variance_table.random.csv", row.names = F)
+
+end_time <- Sys.time()
+print(paste0("This code took long: ", end_time-start_time))
+```
+
+end of BLUPs generating 
+```{r}
+print(hr$model %>% summary())
+```
+
+
+
+```{r}
+library(data.table)
+
+start_time <- Sys.time()
+
+# Add total leaflet area calculation if needed
+# pheno$Total_Leaflet_Area <- pheno$SPP_I + pheno$SPP_M  # Example if you want to sum these
+
+# Pre-allocate results storage
+traits <- colnames(pheno)[4:ncol(pheno)]
+# If adding Total_Leaflet_Area:
+# traits <- c(traits, "Total_Leaflet_Area")
+
+results <- lapply(traits, function(trait) {
+  hr <- H2cal(
+    data = pheno,
+    trait = trait,
+    gen.name = "line",
+    rep.n = 6,
+    env.n = 3,
+    env.name = unique(pheno$env),
+    random.model = "1 + env + (1|env:block) + (1|line:env)",
+    fixed.model = "0 + env + (1|env:block) + line + (1|line:env)",
+    emmeans = TRUE,
+    plot_diag = FALSE,
+    outliers.rm = TRUE
+  )
+  
+  blue_means <- as.data.frame(emmeans(hr$model, specs = "line"))
+  colnames(blue_means) <- c("line", "value")
+  
+  # Descriptive stats
+  desc <- data.frame(
+    Trait = trait,
+    Mean = mean(blue_means$value, na.rm = TRUE),
+    Median = median(blue_means$value, na.rm = TRUE),
+    Min = min(blue_means$value, na.rm = TRUE),
+    Max = max(blue_means$value, na.rm = TRUE),
+    SD = sd(blue_means$value, na.rm = TRUE),
+    CV = sd(blue_means$value) / mean(blue_means$value),
+    H2.cullis = hr$tabsmr$H2.c
+  )
+  
+  # Variance components
+  y <- as.data.frame(VarCorr(hr$model))
+  y <- y[y$grp != "line", ]
+  y$percent <- round(y$vcov / sum(y$vcov) * 100, 1)
+  
+  list(blues = blue_means, desc = desc, var = y)
+})
+
+# Combine results
+final_data <- Reduce(
+  function(x, y) merge(x, y, by = "line", all = TRUE),
+  lapply(results, function(x) setNames(x$blues, c("line", names(x$blues)[2])))
+)
+
+descriptive_stats <- do.call(rbind, lapply(results, `[[`, "desc"))
+
+variance_table <- Reduce(
+  function(x, y) merge(x, y, by = "grp", all = TRUE),
+  lapply(results, function(x) x$var)
+)
+
+# Save results
+fwrite(final_data, "blues.csv")
+fwrite(descriptive_stats, "summary_blues.csv")
+fwrite(variance_table, "variance_table_blues.csv")
+
+end_time <- Sys.time()
+print(end_time - start_time)
+```
+
+
+
+
+
+gives you data frames that have genotype data based on the phenotype data provided.
+can use for input into tassel also. 
+But this will help in extractiung common genotypes across both phenotypic data and genotypic data file. This helps in anlyzing common lines acrross all the locations and years.
+
+#run this code for function 
+#DO NOT change any code in this chunk
+
+```{r}
+subset_geno_pheno = function(SNP_data, pheno_data){
+  
+  geno_list = pheno_data$name[pheno_data$name %in% colnames(SNP_data)]
+  noSNP = pheno_data$name[!(pheno_data$name  %in% colnames(SNP_data))]
+  
+  geno_df = SNP_data %>% select(c(1:11, all_of(geno_list)))
+  
+  Pheno_df = pheno_data %>% filter(name %in% geno_list)
+  
+  my_list = list("SNP_data" = geno_df, "Pheno_data" = Pheno_df, "genos_withSNP" = geno_list, "genos_no_SNP" = noSNP)
+  
+  return(my_list)
+  
+}
+
+```
+
+#run this code for function 
+#DO NOT change any code in this chunk
+
+will write pheno and geno data to tassel format from the above functon to a file directory of your choosing. 
+```{r}
+tassel_phenotype = function(pheno_file, base_file_name, genotype_data){
+  n_traits = dim(pheno_file)[2]-1
+  
+  A = c("taxa", rep("data",n_traits))
+  
+  pheno_file_m  = as.matrix(pheno_file)
+  
+  pheno_file1 = rbind(pheno_file_m, colnames(pheno_file))
+  pheno_file1 = rbind(pheno_file1, A)
+  A = c("<Phenotype>",rep("",n_traits))
+  pheno_file1 = rbind(pheno_file1,A)
+  n_rows = dim(pheno_file1)[1]
+
+  pheno_file1 = pheno_file1[c(n_rows,n_rows-1,n_rows-2,1:(n_rows-3)),]
+  
+  pheno_file1[3,1] = "Taxa"
+  
+  write.table(pheno_file1, paste(base_file_name, "_phenotype.txt") , sep = "\t", row.names = FALSE, quote = FALSE, col.names = FALSE )
+  
+  write.table(genotype_data, paste(base_file_name, "_genotype.txt") , sep = "\t", row.names = FALSE, quote = FALSE, col.names = TRUE )
+  
+  
+  geno_order = colnames(genotype_data [,12:ncol(genotype_data)])
+  
+  pheno_order = pheno_file1[4:nrow(pheno_file1),1]
+  pheno_order = unname(pheno_order)
+  
+  my_list = list("pheno_file" = pheno_file1,  "geno_order = Pheno order"= identical(geno_order, pheno_order) , "pheno_order = geno_order" = identical(pheno_order, geno_order))
+  
+  return(my_list)
+
+}
+
+```
+
+#How to read in the genotype file to R so that you can subset for needed genotypes
+#Change the code accroding to your working directory and files 
+
+```{r}
+
+geno_file = read.table("C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\blups\\MungGnm7_updatedHapmap.hmp.txt", comment.char = "")
+geno_file[1:10,1:10]
+colnames(geno_file) = geno_file[1,]
+geno_file = geno_file[-1,]
+geno_file[1:10,1:20]
+geno_file
+```
+
+
+
+#Change the code accroding to your working directory and files 
+
+Sample part of the genotype file
+
+```{r}
+
+geno_subset = geno_file[,1:250]
+pheno_file = read.csv("C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\blups\\blups.csv")
+#pheno_file = BLUPS
+A = colnames(pheno_file)
+A[1] = "name"
+colnames(pheno_file) = A
+colnames(pheno_file)
+pheno_file
+```
+
+```{r}
+install.packages("tidyverse")
+```
+
+subsetting your genotype and phenotype file
+
+#DO NOT change any code in this chunk
+```{r}
+data_subset = subset_geno_pheno(SNP_data = geno_file, pheno_data = pheno_file)
+```
+#DO NOT change any code in this chunk
+```{r}
+data_subset$SNP_data
+data_subset$Pheno_data
+data_subset$genos_withSNP
+data_subset$genos_no_SNP
+```
+Format for tassell
+#Only change your working directory 
+```{r}
+tassel_data = tassel_phenotype(pheno_file = data_subset$Pheno_data, "C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\blups\\blups.csv", genotype_data = data_subset$SNP_data)
+
+tassel_data$pheno_file
+tassel_data$`geno_order = Pheno order`
+tassel_data$`pheno_order = geno_order`
+```
+
+
+#End of data formatting tutorial. 
+#This will give two outputs 1. phenotype and 2. genotype. (common lines)
+
+
+
+
+
+#GAPIT starts 
+```{r}
+
+#setwd("C:\\Users\\naresh89\\Desktop\\My projects\\GWAS\\Analysis_2024\\BLINK_MLM")
+myY <- read.table("C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\blups\\blups.csv _phenotype.txt", head = TRUE)
+myG <- read.table("C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\Seed image analysis\\blups\\blups.csv _genotype.hmp.txt", comment.char = "")
+
+#myG <- read.table("mdp_genotype_test.hmp.txt", head = FALSE)
+myGAPIT <- GAPIT(G=myG, output.numerical=TRUE)
+myGD= myGAPIT$GD
+myGM= myGAPIT$GM
+
+
+#myGD=read.table("C:\\Users\\naresh89\\Desktop\\My projects\\GWAS\\Analysis_2024\\2023\\GAPIT.Genotype.Numerical.txt",head=T)
+#myGM=read.table("C:\\Users\\naresh89\\Desktop\\My projects\\GWAS\\Analysis_2024\\2023\\GAPIT.Genotype.map.txt",head=T)
+#Step 2: Run GAPIT
+#setwd("C:\\Users\\naresh89\\Desktop\\My projects\\GWAS\\Analysis_2024\\2023\\BLINK_farmCPU")
+myGAPIT <- GAPIT(
+  Y=myY,
+  GD=myGD,
+  GM=myGM,
+  PCA.total=3,
+  SNP.MAF = 0.05,
+  Multiple_analysis = TRUE,
+  model=c("BLINK", "MLM", "farmCPU")
+  )
+
+```
+
+```{r}
+str(myG)
+str(myY)
+```
+
+
+
+
+```{r}
+# Load the necessary library
+library(qqman)
+
+# Load your GWAS data
+gwas_results <-read.csv("C:\\Users\\naresh89\\Desktop\\My projects\\gwas\\analysis2024\\numberofseedperpod\\GAPIT.Association.GWAS_Results.BLINK.SPP.csv" ) 
+
+significant_snps <- gwas_results[gwas_results$P < 0.05, "SNP"]
+
+# Manhattan plot
+png("manhattan_plot.png", width = 11, height = 8, units = "in", res = 600)
+manhattan(gwas_results, chr = "Chr", bp = "Pos", snp = "SNP", p = "P.value", 
+          col = c("blue4", "orange3"), ylim = c(0, 12),suggestiveline = -log10(1e-05), genomewideline = -log10(5e-08),
+          highlight = significant_snps,  # Highlight significant SNPs
+          annotatePval = 0.05,  # Annotate SNPs with P < 0.05
+          main = "Number of seeds per pod")
+
+```
+
